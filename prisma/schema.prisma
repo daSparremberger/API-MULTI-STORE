@@ -1,0 +1,447 @@
+// prisma/schema.prisma
+
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "debian-openssl-1.1.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/**
+ * ===========================
+ * Enums
+ * ===========================
+ */
+
+enum OrderStatus {
+  PENDING
+  PAID
+  CANCELLED
+  REFUNDED
+}
+
+enum CouponType {
+  PERCENT
+  FIXED
+}
+
+enum PointsReason {
+  EARN_ORDER
+  REDEEM_ORDER
+  ADJUSTMENT
+  INFLUENCER_BONUS
+}
+
+enum InfluencerPointsReason {
+  INFLUENCER_BONUS
+  ADJUSTMENT
+}
+
+/**
+ * ===========================
+ * Core: Users & Auth
+ * ===========================
+ */
+
+model User {
+  id                String    @id @default(cuid())
+  name              String
+  birthDate         DateTime?
+  cpf               String    @unique
+  email             String    @unique
+  passwordHash      String
+  phone             String?
+  abacateCustomerId String?
+  emailVerifiedAt   DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  // relations
+  addresses              Address[]
+  favorites              Favorite[]
+  orders                 Order[]
+  couponRedemptions      CouponRedemption[]
+  refreshTokens          RefreshToken[]
+  emailTokens            EmailVerificationToken[]
+  passwordTokens         PasswordResetToken[]
+  pointsAccount          UserPointsAccount?
+  userPointsTransactions UserPointsTransaction[]
+
+  @@index([email])
+  @@index([cpf])
+}
+
+model RefreshToken {
+  id        String    @id @default(cuid())
+  userId    String
+  tokenHash String    @unique
+  ip        String?
+  userAgent String?
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, expiresAt])
+}
+
+model EmailVerificationToken {
+  id        String   @id @default(cuid())
+  userId    String
+  tokenHash String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, expiresAt])
+}
+
+model PasswordResetToken {
+  id        String   @id @default(cuid())
+  userId    String
+  tokenHash String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, expiresAt])
+}
+
+/**
+ * ===========================
+ * Address Book
+ * ===========================
+ */
+
+model Address {
+  id        String   @id @default(cuid())
+  userId    String
+  street    String
+  number    String
+  district  String
+  city      String
+  state     String
+  zip       String
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+/**
+ * ===========================
+ * Catalog
+ * ===========================
+ */
+
+model Ingredient {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  createdAt   DateTime @default(now())
+
+  products ProductIngredient[]
+
+  @@unique([name])
+}
+
+model Derivative {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  createdAt   DateTime @default(now())
+
+  products ProductDerivative[]
+
+  @@unique([name])
+}
+
+model Product {
+  id             String   @id @default(cuid())
+  name           String
+  code           String   @unique
+  description    String?
+  photoUrl       String?
+  costPriceCents Int
+  salePriceCents Int
+  quantity       Int      @default(0)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  ingredients    ProductIngredient[]
+  derivatives    ProductDerivative[]
+  nutrition      NutritionTable?
+  favorites      Favorite[]
+  orderItems     OrderItem[]
+  promotionItems PromotionItem[]
+
+  @@index([name])
+}
+
+model ProductIngredient {
+  productId    String
+  ingredientId String
+
+  product    Product    @relation(fields: [productId], references: [id], onDelete: Cascade)
+  ingredient Ingredient @relation(fields: [ingredientId], references: [id], onDelete: Restrict)
+
+  @@id([productId, ingredientId])
+}
+
+model ProductDerivative {
+  productId    String
+  derivativeId String
+
+  product    Product    @relation(fields: [productId], references: [id], onDelete: Cascade)
+  derivative Derivative @relation(fields: [derivativeId], references: [id], onDelete: Restrict)
+
+  @@id([productId, derivativeId])
+}
+
+model NutritionTable {
+  id           String   @id @default(cuid())
+  productId    String   @unique
+  servingSize  String?
+  energyKcal   Int?
+  carbs        Decimal? @db.Decimal(10, 2)
+  protein      Decimal? @db.Decimal(10, 2)
+  fatTotal     Decimal? @db.Decimal(10, 2)
+  fatSaturated Decimal? @db.Decimal(10, 2)
+  fatTrans     Decimal? @db.Decimal(10, 2)
+  fiber        Decimal? @db.Decimal(10, 2)
+  sodium       Decimal? @db.Decimal(10, 2)
+  createdAt    DateTime @default(now())
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+}
+
+/**
+ * ===========================
+ * Favorites
+ * ===========================
+ */
+
+model Favorite {
+  userId    String
+  productId String
+  createdAt DateTime @default(now())
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@id([userId, productId])
+  @@index([userId])
+  @@index([productId])
+}
+
+/**
+ * ===========================
+ * Orders & Billing
+ * ===========================
+ */
+
+model Order {
+  id               String      @id @default(cuid())
+  userId           String
+  status           OrderStatus @default(PENDING)
+  subtotalCents    Int
+  discountCents    Int         @default(0)
+  shippingCents    Int         @default(0)
+  totalCents       Int
+  pointsEarned     Int         @default(0)
+  pointsRedeemed   Int         @default(0)
+  couponCode       String?
+  influencerId     String?
+  abacateBillingId String?
+  abacateStatus    String?
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @updatedAt
+
+  user                         User                          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  items                        OrderItem[]
+  delivery                     Delivery?
+  redemptions                  CouponRedemption[]
+  userPointsTransactions       UserPointsTransaction[]
+  influencerPointsTransactions InfluencerPointsTransaction[]
+
+  influencer Influencer? @relation(fields: [influencerId], references: [id])
+
+  @@index([userId])
+  @@index([abacateBillingId])
+  @@index([couponCode])
+  @@index([influencerId])
+}
+
+model OrderItem {
+  id             String @id @default(cuid())
+  orderId        String
+  productId      String
+  nameSnapshot   String
+  codeSnapshot   String
+  unitPriceCents Int
+  quantity       Int
+  totalCents     Int
+
+  order   Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id])
+
+  @@index([orderId])
+  @@index([productId])
+}
+
+model Delivery {
+  id        String   @id @default(cuid())
+  orderId   String   @unique
+  street    String
+  number    String
+  district  String
+  city      String
+  state     String
+  zip       String
+  createdAt DateTime @default(now())
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+}
+
+/**
+ * ===========================
+ * Coupons & Influencers
+ * ===========================
+ */
+
+model Coupon {
+  id           String     @id @default(cuid())
+  code         String     @unique
+  type         CouponType
+  value        Int
+  active       Boolean    @default(true)
+  usedCount    Int        @default(0)
+  influencerId String?
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  redemptions CouponRedemption[]
+  influencer  Influencer?        @relation(fields: [influencerId], references: [id])
+
+  @@index([influencerId])
+}
+
+model CouponRedemption {
+  id                  String   @id @default(cuid())
+  couponId            String
+  orderId             String
+  userId              String
+  amountDiscountCents Int
+  createdAt           DateTime @default(now())
+
+  coupon Coupon @relation(fields: [couponId], references: [id], onDelete: Cascade)
+  order  Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id])
+
+  @@index([couponId])
+  @@index([orderId])
+  @@index([userId])
+}
+
+model Influencer {
+  id        String   @id @default(cuid())
+  name      String
+  handle    String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  coupons       Coupon[]
+  orders        Order[]
+  pointsAccount InfluencerPointsAccount?
+  transactions  InfluencerPointsTransaction[]
+}
+
+model InfluencerPointsAccount {
+  id           String   @id @default(cuid())
+  influencerId String   @unique
+  balance      Int      @default(0)
+  createdAt    DateTime @default(now())
+
+  influencer Influencer @relation(fields: [influencerId], references: [id], onDelete: Cascade)
+}
+
+model InfluencerPointsTransaction {
+  id           String                 @id @default(cuid())
+  influencerId String
+  orderId      String?
+  points       Int
+  reason       InfluencerPointsReason
+  createdAt    DateTime               @default(now())
+
+  influencer Influencer @relation(fields: [influencerId], references: [id], onDelete: Cascade)
+  order      Order?     @relation(fields: [orderId], references: [id])
+
+  @@index([influencerId])
+  @@index([orderId])
+}
+
+/**
+ * ===========================
+ * User Points
+ * ===========================
+ */
+
+model UserPointsAccount {
+  id        String   @id @default(cuid())
+  userId    String   @unique
+  balance   Int      @default(0)
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model UserPointsTransaction {
+  id        String       @id @default(cuid())
+  userId    String
+  orderId   String?
+  points    Int
+  reason    PointsReason
+  createdAt DateTime     @default(now())
+
+  user  User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  order Order? @relation(fields: [orderId], references: [id])
+
+  @@index([userId])
+  @@index([orderId])
+}
+
+/**
+ * ===========================
+ * Promotions (opcional)
+ * ===========================
+ */
+
+model Promotion {
+  id             String   @id @default(cuid())
+  code           String   @unique
+  costPriceCents Int
+  salePriceCents Int
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  items PromotionItem[]
+}
+
+model PromotionItem {
+  id          String @id @default(cuid())
+  promotionId String
+  productId   String
+  quantity    Int    @default(1)
+
+  promotion Promotion @relation(fields: [promotionId], references: [id], onDelete: Cascade)
+  product   Product   @relation(fields: [productId], references: [id])
+
+  @@unique([promotionId, productId])
+}
