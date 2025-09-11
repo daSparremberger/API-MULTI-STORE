@@ -1,291 +1,103 @@
 // prisma/seed.ts
-// Seed idempotente: cria ingredientes, derivados, um produto exemplo,
-// um influencer + cupom e um usuário dev com endereço.
-
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient, UserRole } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 
 const prisma = new PrismaClient();
 
-async function upsertIngredient(name: string, description?: string) {
-  return prisma.ingredient.upsert({
-    where: { name },
-    update: { description: description ?? null },
-    create: { name, description: description ?? null },
+// Funções upsert (idempotentes)
+async function upsertStore(subdomain: string, data: { name: string; city: string; state: string; abacatepayApiKey?: string; abacatepayWebhookSecret?: string; }) {
+  return prisma.store.upsert({
+    where: { subdomain },
+    update: data,
+    create: { subdomain, ...data },
   });
 }
 
-async function upsertDerivative(name: string, description?: string) {
-  return prisma.derivative.upsert({
-    where: { name },
-    update: { description: description ?? null },
-    create: { name, description: description ?? null },
-  });
-}
-
-async function upsertInfluencer(name: string, handle?: string) {
-  // não há unique em handle, então usamos name para idempotência
-  const existing = await prisma.influencer.findFirst({ where: { name } });
-  if (existing) return existing;
-  return prisma.influencer.create({
-    data: { name, handle: handle ?? null },
-  });
-}
-
-async function upsertCoupon(code: string, data: { type: 'PERCENT' | 'FIXED'; value: number; influencerId?: string | null }) {
-  const existing = await prisma.coupon.findUnique({ where: { code } });
-  if (existing) {
-    return prisma.coupon.update({
-      where: { id: existing.id },
-      data: {
-        type: data.type,
-        value: data.value,
-        influencerId: data.influencerId ?? null,
-        active: true,
-      },
-    });
-  }
-  return prisma.coupon.create({
-    data: {
-      code,
-      type: data.type,
-      value: data.value,
-      influencerId: data.influencerId ?? null,
-      active: true,
-    },
-  });
-}
-
-async function upsertUser(email: string, data: {
-  name: string;
-  cpf: string;
-  phone?: string | null;
-  password: string;
-}) {
-  const passwordHash = await bcrypt.hash(data.password, 10);
-  const existing = await prisma.user.findUnique({ where: { email } });
-  if (existing) {
-    return prisma.user.update({
-      where: { id: existing.id },
-      data: {
-        name: data.name,
-        cpf: data.cpf,
-        phone: data.phone ?? null,
-        passwordHash,
-        emailVerifiedAt: existing.emailVerifiedAt ?? new Date(),
-      },
-    });
-  }
-  return prisma.user.create({
-    data: {
-      name: data.name,
+async function upsertUser(email: string, data: { name: string; cpf: string; password?: string; role: UserRole; storeId?: string | null }) {
+  const passwordHash = data.password ? await bcrypt.hash(data.password, 10) : 'dummy_hash_for_seed';
+  return prisma.user.upsert({
+    where: { email },
+    update: { name: data.name, cpf: data.cpf, role: data.role, storeId: data.storeId },
+    create: {
       email,
+      name: data.name,
       cpf: data.cpf,
-      phone: data.phone ?? null,
       passwordHash,
       emailVerifiedAt: new Date(),
+      role: data.role,
+      storeId: data.storeId,
     },
   });
 }
 
-async function upsertProduct(code: string, data: {
-  name: string;
-  description?: string | null;
-  photoUrl?: string | null;
-  costPriceCents: number;
-  salePriceCents: number;
-  quantity: number;
-  ingredientIds?: string[];
-  derivativeIds?: string[];
-  nutrition?: {
-    servingSize?: string | null;
-    energyKcal?: number | null;
-    carbs?: string | null;
-    protein?: string | null;
-    fatTotal?: string | null;
-    fatSaturated?: string | null;
-    fatTrans?: string | null;
-    fiber?: string | null;
-    sodium?: string | null;
-  } | null;
-}) {
-  const existing = await prisma.product.findUnique({ where: { code } });
+async function upsertProduct(code: string, data: { name: string; costPriceCents: number; salePriceCents: number }) {
+  return prisma.product.upsert({
+    where: { code },
+    update: data,
+    create: { code, ...data },
+  });
+}
 
-  if (existing) {
-    // atualiza e substitui relações N:N e tabela de nutrição
-    return prisma.product.update({
-      where: { id: existing.id },
-      data: {
-        name: data.name,
-        description: data.description ?? null,
-        photoUrl: data.photoUrl ?? null,
-        costPriceCents: data.costPriceCents,
-        salePriceCents: data.salePriceCents,
-        quantity: data.quantity,
-        ingredients: data.ingredientIds
-          ? {
-              deleteMany: {},
-              create: data.ingredientIds.map((ingredientId) => ({ ingredientId })),
-            }
-          : undefined,
-        derivatives: data.derivativeIds
-          ? {
-              deleteMany: {},
-              create: data.derivativeIds.map((derivativeId) => ({ derivativeId })),
-            }
-          : undefined,
-        nutrition:
-          data.nutrition !== undefined
-            ? data.nutrition
-              ? {
-                  upsert: {
-                    create: {
-                      servingSize: data.nutrition.servingSize ?? null,
-                      energyKcal: data.nutrition.energyKcal ?? null,
-                      carbs: data.nutrition.carbs ?? null,
-                      protein: data.nutrition.protein ?? null,
-                      fatTotal: data.nutrition.fatTotal ?? null,
-                      fatSaturated: data.nutrition.fatSaturated ?? null,
-                      fatTrans: data.nutrition.fatTrans ?? null,
-                      fiber: data.nutrition.fiber ?? null,
-                      sodium: data.nutrition.sodium ?? null,
-                    },
-                    update: {
-                      servingSize: data.nutrition.servingSize ?? null,
-                      energyKcal: data.nutrition.energyKcal ?? null,
-                      carbs: data.nutrition.carbs ?? null,
-                      protein: data.nutrition.protein ?? null,
-                      fatTotal: data.nutrition.fatTotal ?? null,
-                      fatSaturated: data.nutrition.fatSaturated ?? null,
-                      fatTrans: data.nutrition.fatTrans ?? null,
-                      fiber: data.nutrition.fiber ?? null,
-                      sodium: data.nutrition.sodium ?? null,
-                    },
-                  },
-                }
-              : { delete: true }
-            : undefined,
-      },
-      include: {
-        ingredients: { include: { ingredient: true } },
-        derivatives: { include: { derivative: true } },
-        nutrition: true,
-      },
-    });
-  }
-
-  // cria novo
-  return prisma.product.create({
-    data: {
-      name: data.name,
-      code,
-      description: data.description ?? null,
-      photoUrl: data.photoUrl ?? null,
-      costPriceCents: data.costPriceCents,
-      salePriceCents: data.salePriceCents,
-      quantity: data.quantity,
-      ingredients: data.ingredientIds
-        ? { create: data.ingredientIds.map((ingredientId) => ({ ingredientId })) }
-        : undefined,
-      derivatives: data.derivativeIds
-        ? { create: data.derivativeIds.map((derivativeId) => ({ derivativeId })) }
-        : undefined,
-      nutrition: data.nutrition
-        ? {
-            create: {
-              servingSize: data.nutrition.servingSize ?? null,
-              energyKcal: data.nutrition.energyKcal ?? null,
-              carbs: data.nutrition.carbs ?? null,
-              protein: data.nutrition.protein ?? null,
-              fatTotal: data.nutrition.fatTotal ?? null,
-              fatSaturated: data.nutrition.fatSaturated ?? null,
-              fatTrans: data.nutrition.fatTrans ?? null,
-              fiber: data.nutrition.fiber ?? null,
-              sodium: data.nutrition.sodium ?? null,
-            },
-          }
-        : undefined,
-    },
-    include: {
-      ingredients: { include: { ingredient: true } },
-      derivatives: { include: { derivative: true } },
-      nutrition: true,
-    },
+async function setInventory(storeId: string, productId: string, quantity: number) {
+  return prisma.storeInventory.upsert({
+    where: { storeId_productId: { storeId, productId } },
+    update: { quantity },
+    create: { storeId, productId, quantity },
   });
 }
 
 async function main() {
   console.log('🌱 Seeding...');
 
-  // Ingredientes
-  const frango = await upsertIngredient('Frango', 'Peito de frango grelhado');
-  const arroz = await upsertIngredient('Arroz', 'Arroz integral cozido');
-  const nozes = await upsertIngredient('Nozes', 'Contém alérgenos');
-
-  // Derivados / Atributos
-  const semLactose = await upsertDerivative('Sem lactose');
-  const contemNozes = await upsertDerivative('Contém nozes');
-
-  // Influencer + Cupom
-  const influencer = await upsertInfluencer('Larissa', '@larissa.fit');
-  await upsertCoupon('LARISSA10', {
-    type: 'PERCENT',
-    value: 10, // 10% off
-    influencerId: influencer.id,
+  // 1. Cria a loja principal (franquia de Cascavel)
+  const storeCascavel = await upsertStore('cascavel', {
+    name: 'Forfit - Cascavel',
+    city: 'Cascavel',
+    state: 'PR',
+    abacatepayApiKey: 'abc_dev_wLmb4QxBnbfr5P2xGE4smusY', // Chave de teste
+    abacatepayWebhookSecret: 'a82fdc9c77b04d12aa7fbb08d2214' // Segredo de teste
   });
+  console.log(`✅ Loja criada: ${storeCascavel.name}`);
 
-  // Usuário dev
-  const dev = await upsertUser('dev@example.com', {
-    name: 'Usuário Dev',
-    cpf: '00011122233',
-    phone: '(45) 99999-0000',
+  // 2. Cria um Super Admin (geral) e um Admin para a loja de Cascavel
+  const superAdmin = await upsertUser('superadmin@forfit.com.br', {
+    name: 'Super Admin',
+    cpf: '00000000000',
+    password: 'superpassword123',
+    role: UserRole.SUPER_ADMIN,
+  });
+  console.log(`✅ Super Admin criado: ${superAdmin.email}`);
+
+  const adminCascavel = await upsertUser('admin.cascavel@forfit.com.br', {
+    name: 'Admin Cascavel',
+    cpf: '11111111111',
+    password: 'adminpassword123',
+    role: UserRole.ADMIN,
+    storeId: storeCascavel.id,
+  });
+  console.log(`✅ Admin da loja criado: ${adminCascavel.email}`);
+
+  // 3. Cria um cliente de exemplo
+  const customer = await upsertUser('cliente@example.com', {
+    name: 'Cliente Exemplo',
+    cpf: '22222222222',
     password: 'password123',
+    role: UserRole.CUSTOMER,
   });
+  console.log(`✅ Cliente criado: ${customer.email}`);
 
-  // Endereço do usuário dev (cria um, se não houver nenhum)
-  const hasAddress = await prisma.address.findFirst({ where: { userId: dev.id } });
-  if (!hasAddress) {
-    await prisma.address.create({
-      data: {
-        userId: dev.id,
-        street: 'Rua Exemplo',
-        number: '123',
-        district: 'Centro',
-        city: 'Cascavel',
-        state: 'PR',
-        zip: '85800-000',
-      },
-    });
-  }
-
-  // Produto exemplo
-  const produto = await upsertProduct('FF-001', {
+  // 4. Cria um produto global
+  const produtoFrango = await upsertProduct('FF-001', {
     name: 'Frango grelhado com arroz integral',
-    description: 'Bandeja 300 g',
-    photoUrl: null,
-    costPriceCents: 1250, // R$ 12,50
-    salePriceCents: 2790, // R$ 27,90
-    quantity: 50,
-    ingredientIds: [frango.id, arroz.id, nozes.id],
-    derivativeIds: [semLactose.id, contemNozes.id],
-    nutrition: {
-      servingSize: '300 g',
-      energyKcal: 320,
-      carbs: '18.20',
-      protein: '32.50',
-      fatTotal: '9.10',
-      fatSaturated: '2.10',
-      fatTrans: '0.00',
-      fiber: '3.40',
-      sodium: '420.00',
-    },
+    costPriceCents: 1250,
+    salePriceCents: 2790,
   });
+  console.log(`✅ Produto global criado: ${produtoFrango.name}`);
 
-  console.log('✅ Ingredientes:', [frango.name, arroz.name, nozes.name].join(', '));
-  console.log('✅ Derivados:', [semLactose.name, contemNozes.name].join(', '));
-  console.log('✅ Influencer + Cupom: LARISSA10');
-  console.log('✅ Usuário dev:', dev.email);
-  console.log('✅ Produto:', produto.name, '-', produto.code);
+  // 5. Define o estoque deste produto para a loja de Cascavel
+  await setInventory(storeCascavel.id, produtoFrango.id, 50);
+  console.log(`✅ Estoque definido para ${produtoFrango.name} em ${storeCascavel.name}: 50 unidades`);
+
 
   console.log('🌱 Seed finalizado!');
 }

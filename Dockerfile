@@ -34,6 +34,10 @@ RUN npm install --omit=dev
 COPY --from=builder /usr/src/app/dist ./dist
 COPY --from=builder /usr/src/app/prisma ./prisma
 
+# --- LINHA ADICIONADA ---
+# Copia o cliente Prisma gerado do estágio anterior para o node_modules final
+COPY --from=builder /usr/src/app/node_modules/.prisma ./node_modules/.prisma
+
 # Expõe a porta que a aplicação vai usar
 EXPOSE 3000
 

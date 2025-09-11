@@ -2,6 +2,7 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma.js';
+import { Store } from '@prisma/client';
 
 /**
  * Payloads
@@ -16,6 +17,8 @@ const derivativeInput = z.object({
   description: z.string().nullish(),
 });
 
+// Este payload é para o painel de Super Admin, não para o cliente final.
+// O cliente não cria produtos.
 const productInput = z.object({
   name: z.string().min(2),
   code: z.string().min(1),
@@ -23,16 +26,12 @@ const productInput = z.object({
   photoUrl: z.string().url().nullish(),
   costPriceCents: z.number().int().nonnegative(),
   salePriceCents: z.number().int().nonnegative(),
-  quantity: z.number().int().nonnegative().default(0),
-
   ingredientIds: z.array(z.string()).default([]),
   derivativeIds: z.array(z.string()).default([]),
-
   nutrition: z
     .object({
       servingSize: z.string().nullish(),
       energyKcal: z.number().int().nullish(),
-      // Decimals como string para evitar problemas de precisão
       carbs: z.string().nullish(),
       protein: z.string().nullish(),
       fatTotal: z.string().nullish(),
@@ -46,46 +45,23 @@ const productInput = z.object({
 });
 
 export default async function catalogRoutes(app: FastifyInstance) {
-  /**
-   * INGREDIENTS
-   */
-  app.get('/ingredients', async () => {
-    return prisma.ingredient.findMany({ orderBy: { name: 'asc' } });
-  });
-
-  app.post('/ingredients', async (req, reply) => {
-    const body = ingredientInput.parse(req.body);
-    const created = await prisma.ingredient.create({
-      data: { name: body.name, description: body.description ?? null },
-    });
-    return reply.code(201).send(created);
-  });
+  // O detector de loja é essencial para saber de qual inventário puxar a quantidade
+  app.addHook('preHandler', app.storeDetector);
 
   /**
-   * DERIVATIVES (atributos / alergênicos, etc.)
+   * ==========================================================
+   * Rotas Públicas (para o cliente da loja/franquia)
+   * ==========================================================
    */
-  app.get('/derivatives', async () => {
-    return prisma.derivative.findMany({ orderBy: { name: 'asc' } });
-  });
 
-  app.post('/derivatives', async (req, reply) => {
-    const body = derivativeInput.parse(req.body);
-    const created = await prisma.derivative.create({
-      data: { name: body.name, description: body.description ?? null },
-    });
-    return reply.code(201).send(created);
-  });
-
-  /**
-   * PRODUCTS
-   */
-  // Listar (com busca opcional)
-  app.get('/', async (req) => {
+  // Listar produtos para o cliente final (não precisa de auth)
+  app.get('/products', async (req) => {
     const q = z
       .object({ search: z.string().optional() })
       .parse((req as any).query ?? {});
+    const store = (req as any).store as Store;
 
-    return prisma.product.findMany({
+    const products = await prisma.product.findMany({
       where: q.search
         ? {
             OR: [
@@ -95,70 +71,36 @@ export default async function catalogRoutes(app: FastifyInstance) {
           }
         : undefined,
       include: {
+        // Inclui apenas o inventário da loja atual
+        inventory: {
+          where: { storeId: store.id }
+        },
         ingredients: { include: { ingredient: true } },
         derivatives: { include: { derivative: true } },
         nutrition: true,
       },
       orderBy: { createdAt: 'desc' },
     });
-  });
 
-  // Criar
-  app.post('/', async (req, reply) => {
-    const body = productInput.parse(req.body);
-
-    const created = await prisma.product.create({
-      data: {
-        name: body.name,
-        code: body.code,
-        description: body.description ?? null,
-        photoUrl: body.photoUrl ?? null,
-        costPriceCents: body.costPriceCents,
-        salePriceCents: body.salePriceCents,
-        quantity: body.quantity,
-
-        // N:N
-        ingredients: {
-          create: body.ingredientIds.map((ingredientId) => ({ ingredientId })),
-        },
-        derivatives: {
-          create: body.derivativeIds.map((derivativeId) => ({ derivativeId })),
-        },
-
-        // 1:1
-        nutrition: body.nutrition
-          ? {
-              create: {
-                servingSize: body.nutrition.servingSize ?? null,
-                energyKcal: body.nutrition.energyKcal ?? null,
-                carbs: body.nutrition.carbs ?? null,
-                protein: body.nutrition.protein ?? null,
-                fatTotal: body.nutrition.fatTotal ?? null,
-                fatSaturated: body.nutrition.fatSaturated ?? null,
-                fatTrans: body.nutrition.fatTrans ?? null,
-                fiber: body.nutrition.fiber ?? null,
-                sodium: body.nutrition.sodium ?? null,
-              },
-            }
-          : undefined,
-      },
-      include: {
-        ingredients: { include: { ingredient: true } },
-        derivatives: { include: { derivative: true } },
-        nutrition: true,
-      },
+    // Mapeia para um formato mais amigável, colocando a quantidade no topo do objeto
+    return products.map(p => {
+      const { inventory, ...productData } = p;
+      return {
+        ...productData,
+        quantity: inventory[0]?.quantity ?? 0
+      };
     });
-
-    return reply.code(201).send(created);
   });
 
-  // Detalhe
-  app.get('/:id', async (req, reply) => {
+  // Detalhe do produto
+  app.get('/products/:id', async (req, reply) => {
     const { id } = z.object({ id: z.string() }).parse((req as any).params);
+    const store = (req as any).store as Store;
 
     const product = await prisma.product.findUnique({
       where: { id },
       include: {
+        inventory: { where: { storeId: store.id } },
         ingredients: { include: { ingredient: true } },
         derivatives: { include: { derivative: true } },
         nutrition: true,
@@ -166,90 +108,27 @@ export default async function catalogRoutes(app: FastifyInstance) {
     });
 
     if (!product) return reply.code(404).send({ error: 'not_found' });
-    return product;
+
+    const { inventory, ...productData } = product;
+    return {
+      ...productData,
+      quantity: inventory[0]?.quantity ?? 0,
+    };
   });
 
-  // Atualizar (parcial)
-  app.patch('/:id', async (req, reply) => {
-    const { id } = z.object({ id: z.string() }).parse((req as any).params);
-    const body = productInput.partial().parse(req.body);
+  /**
+   * ==========================================================
+   * Rotas de Catálogo Global (para o painel de Super Admin)
+   * ==========================================================
+   * Estas rotas não precisam do `storeDetector` e devem ser
+   * movidas para /admin e protegidas por role futuramente.
+   */
 
-    const updated = await prisma.product.update({
-      where: { id },
-      data: {
-        ...(body.name !== undefined ? { name: body.name } : {}),
-        ...(body.code !== undefined ? { code: body.code } : {}),
-        ...(body.description !== undefined ? { description: body.description } : {}),
-        ...(body.photoUrl !== undefined ? { photoUrl: body.photoUrl } : {}),
-        ...(body.costPriceCents !== undefined ? { costPriceCents: body.costPriceCents } : {}),
-        ...(body.salePriceCents !== undefined ? { salePriceCents: body.salePriceCents } : {}),
-        ...(body.quantity !== undefined ? { quantity: body.quantity } : {}),
-
-        ...(body.ingredientIds
-          ? {
-              ingredients: {
-                deleteMany: {},
-                create: body.ingredientIds.map((ingredientId) => ({ ingredientId })),
-              },
-            }
-          : {}),
-
-        ...(body.derivativeIds
-          ? {
-              derivatives: {
-                deleteMany: {},
-                create: body.derivativeIds.map((derivativeId) => ({ derivativeId })),
-              },
-            }
-          : {}),
-
-        ...(body.nutrition !== undefined
-          ? body.nutrition
-            ? {
-                nutrition: {
-                  upsert: {
-                    create: {
-                      servingSize: body.nutrition.servingSize ?? null,
-                      energyKcal: body.nutrition.energyKcal ?? null,
-                      carbs: body.nutrition.carbs ?? null,
-                      protein: body.nutrition.protein ?? null,
-                      fatTotal: body.nutrition.fatTotal ?? null,
-                      fatSaturated: body.nutrition.fatSaturated ?? null,
-                      fatTrans: body.nutrition.fatTrans ?? null,
-                      fiber: body.nutrition.fiber ?? null,
-                      sodium: body.nutrition.sodium ?? null,
-                    },
-                    update: {
-                      servingSize: body.nutrition.servingSize ?? null,
-                      energyKcal: body.nutrition.energyKcal ?? null,
-                      carbs: body.nutrition.carbs ?? null,
-                      protein: body.nutrition.protein ?? null,
-                      fatTotal: body.nutrition.fatTotal ?? null,
-                      fatSaturated: body.nutrition.fatSaturated ?? null,
-                      fatTrans: body.nutrition.fatTrans ?? null,
-                      fiber: body.nutrition.fiber ?? null,
-                      sodium: body.nutrition.sodium ?? null,
-                    },
-                  },
-                },
-              }
-            : { nutrition: { delete: true } }
-          : {}),
-      },
-      include: {
-        ingredients: { include: { ingredient: true } },
-        derivatives: { include: { derivative: true } },
-        nutrition: true,
-      },
-    });
-
-    return updated;
+  app.get('/ingredients', async () => {
+    return prisma.ingredient.findMany({ orderBy: { name: 'asc' } });
   });
 
-  // Remover
-  app.delete('/:id', async (req, reply) => {
-    const { id } = z.object({ id: z.string() }).parse((req as any).params);
-    await prisma.product.delete({ where: { id } });
-    return reply.code(204).send();
+  app.get('/derivatives', async () => {
+    return prisma.derivative.findMany({ orderBy: { name: 'asc' } });
   });
 }

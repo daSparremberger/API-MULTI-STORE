@@ -6,6 +6,7 @@ import { calcSubtotal, applyCoupon } from '../utils/pricing.js';
 import { calculateShipping, type ShippingInput } from '../lib/shipping.js';
 import { AbacatePay } from '../lib/abacatepay.js';
 import { env } from '../env.js';
+import { Store } from '@prisma/client';
 
 const POINT_VALUE_CENTS = 10;       // 1 ponto = R$0,10
 const POINTS_PER_10_REAIS = 1000;   // 1 ponto a cada R$10,00 do SUBTOTAL
@@ -39,29 +40,58 @@ type OrderItemSnapshot = {
 };
 
 export default async function orderRoutes(app: FastifyInstance) {
-  app.get('/', { preHandler: [app.auth] }, async (req) => {
+  // Middleware para garantir que uma loja foi identificada na requisição
+  app.addHook('preHandler', app.storeDetector);
+  app.addHook('preHandler', app.auth);
+
+  app.get('/', async (req) => {
     const userId = (req.user as any).sub as string;
+    const store = (req as any).store as Store;
+
     return prisma.order.findMany({
-      where: { userId },
+      where: { userId, storeId: store.id }, // Filtra pedidos da loja atual
       orderBy: { createdAt: 'desc' },
       include: { items: true, delivery: true }
     });
   });
 
-  app.post('/checkout', { preHandler: [app.auth] }, async (req, reply) => {
+  app.post('/checkout', async (req, reply) => {
     const userId = (req.user as any).sub as string;
+    const store = (req as any).store as Store;
     const body: CheckoutInput = checkoutInput.parse(req.body);
 
-    const productIds = body.items.map((i) => i.productId);
-    const products = await prisma.product.findMany({ where: { id: { in: productIds } } });
+    if (!store.abacatepayApiKey) {
+      return reply.code(500).send({ error: 'store_payment_not_configured' });
+    }
 
-    if (products.length !== productIds.length) {
-      const found = new Set(products.map((p) => p.id));
+    const productIds = body.items.map((i) => i.productId);
+    
+    // Pega produtos e o inventário da loja atual em uma só chamada
+    const productsWithInventory = await prisma.product.findMany({
+      where: { id: { in: productIds } },
+      include: {
+        inventory: {
+          where: { storeId: store.id }
+        }
+      }
+    });
+
+    if (productsWithInventory.length !== productIds.length) {
+      const found = new Set(productsWithInventory.map((p) => p.id));
       const missing = productIds.filter((id) => !found.has(id));
       return reply.code(400).send({ error: 'invalid_products', missing });
     }
 
-    const prodMap = new Map(products.map((p) => [p.id, p] as const));
+    // Validação de estoque
+    for (const item of body.items) {
+      const product = productsWithInventory.find(p => p.id === item.productId);
+      const stock = product?.inventory[0]?.quantity ?? 0;
+      if (stock < item.quantity) {
+        return reply.code(400).send({ error: 'insufficient_stock', productId: item.productId, available: stock });
+      }
+    }
+    
+    const prodMap = new Map(productsWithInventory.map((p) => [p.id, p] as const));
 
     const itemsMapped: OrderItemSnapshot[] = body.items.map((i) => {
       const p = prodMap.get(i.productId)!;
@@ -106,7 +136,10 @@ export default async function orderRoutes(app: FastifyInstance) {
 
     const order = await prisma.order.create({
       data: {
-        userId, status: 'PENDING', subtotalCents, discountCents, shippingCents, totalCents, pointsEarned, pointsRedeemed,
+        userId,
+        storeId: store.id, // Associa o pedido à loja
+        status: 'PENDING',
+        subtotalCents, discountCents, shippingCents, totalCents, pointsEarned, pointsRedeemed,
         couponCode: appliedCoupon?.code ?? null,
         influencerId: appliedCoupon?.influencerId ?? null,
         items: { createMany: { data: itemsMapped } },
@@ -125,7 +158,7 @@ export default async function orderRoutes(app: FastifyInstance) {
           email: user.email,
           taxId: user.cpf,
           cellphone: user.phone
-        });
+        }, { apiKey: store.abacatepayApiKey }); // Usa a chave da loja
         customerId = cust.id;
         await prisma.user.update({ where: { id: user.id }, data: { abacateCustomerId: cust.id } });
       } catch (e) {
@@ -152,14 +185,27 @@ export default async function orderRoutes(app: FastifyInstance) {
           externalId: order.id,
           returnUrl: `${env.FRONTEND_URL}/checkout/success?orderId=${order.id}`,
           completionUrl: `${env.FRONTEND_URL}/checkout/completion?orderId=${order.id}`,
-        });
+        }, { apiKey: store.abacatepayApiKey }); // Usa a chave da loja
 
         await prisma.order.update({
           where: { id: order.id },
           data: { abacateBillingId: billing.id, abacateStatus: 'CREATED' }
         });
+
+        // Decrementa o estoque na transação
+        await prisma.$transaction(
+          order.items.map(item => 
+            prisma.storeInventory.update({
+              where: { storeId_productId: { storeId: store.id, productId: item.productId } },
+              data: { quantity: { decrement: item.quantity } }
+            })
+          )
+        );
+
       } catch (e) {
         req.log.error({ err: e }, 'AbacatePay createBilling failed');
+        // Rollback do pedido
+        await prisma.order.delete({ where: { id: order.id }});
         return reply.code(500).send({ error: 'abacatepay_create_billing_failed', details: (e as Error).message });
       }
     }

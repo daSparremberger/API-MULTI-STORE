@@ -11,10 +11,59 @@ datasource db {
 }
 
 /**
+ * ========================================
+ * ARQUITETURA MULTI-LOJA
+ * ========================================
+ */
+
+// Loja/Franquia: Armazena dados únicos de cada unidade.
+model Store {
+  id        String   @id @default(cuid())
+  name      String   @unique // Ex: "Forfit - Cascavel"
+  subdomain String   @unique // Ex: "cascavel" -> cascavel.forfitalimentos.com.br
+  city      String
+  state     String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Chaves de API e configurações específicas da loja
+  abacatepayApiKey        String?
+  abacatepayWebhookSecret String?
+
+  // Relacionamentos
+  inventory StoreInventory[]
+  orders    Order[]
+  admins    User[]
+}
+
+// Tabela de ligação para controlar o estoque de cada produto em cada loja.
+model StoreInventory {
+  id        String   @id @default(cuid())
+  quantity  Int      @default(0) // Quantidade em estoque
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  storeId   String
+  store     Store    @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  productId String
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([storeId, productId]) // Garante que só há uma entrada de estoque por produto/loja
+}
+
+
+/**
  * ===========================
  * Enums
  * ===========================
  */
+
+// Papel do usuário no sistema
+enum UserRole {
+  CUSTOMER
+  ADMIN // Admin de uma loja específica
+  SUPER_ADMIN // Gerencia todas as lojas e o catálogo global
+}
 
 enum OrderStatus {
   PENDING
@@ -59,6 +108,13 @@ model User {
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
 
+  // Papel do usuário (NOVO)
+  role UserRole @default(CUSTOMER)
+
+  // Se o usuário for ADMIN, ele está ligado a uma loja (NOVO)
+  storeId String?
+  store   Store?  @relation(fields: [storeId], references: [id], onDelete: SetNull)
+
   // relations
   addresses              Address[]
   favorites              Favorite[]
@@ -72,6 +128,7 @@ model User {
 
   @@index([email])
   @@index([cpf])
+  @@index([storeId])
 }
 
 model RefreshToken {
@@ -137,30 +194,26 @@ model Address {
 
 /**
  * ===========================
- * Catalog
+ * Catálogo Global
  * ===========================
  */
 
 model Ingredient {
   id          String   @id @default(cuid())
-  name        String
+  name        String   @unique
   description String?
   createdAt   DateTime @default(now())
 
   products ProductIngredient[]
-
-  @@unique([name])
 }
 
 model Derivative {
   id          String   @id @default(cuid())
-  name        String
+  name        String   @unique
   description String?
   createdAt   DateTime @default(now())
 
   products ProductDerivative[]
-
-  @@unique([name])
 }
 
 model Product {
@@ -171,10 +224,11 @@ model Product {
   photoUrl       String?
   costPriceCents Int
   salePriceCents Int
-  quantity       Int      @default(0)
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
+  // Relacionamentos
+  inventory      StoreInventory[] // MODIFICADO: Relacionamento com estoque por loja
   ingredients    ProductIngredient[]
   derivatives    ProductDerivative[]
   nutrition      NutritionTable?
@@ -237,8 +291,6 @@ model Favorite {
   product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
 
   @@id([userId, productId])
-  @@index([userId])
-  @@index([productId])
 }
 
 /**
@@ -249,7 +301,6 @@ model Favorite {
 
 model Order {
   id               String      @id @default(cuid())
-  userId           String
   status           OrderStatus @default(PENDING)
   subtotalCents    Int
   discountCents    Int         @default(0)
@@ -259,24 +310,26 @@ model Order {
   pointsRedeemed   Int         @default(0)
   couponCode       String?
   influencerId     String?
-  abacateBillingId String?
+  abacateBillingId String?     @unique
   abacateStatus    String?
   createdAt        DateTime    @default(now())
   updatedAt        DateTime    @updatedAt
 
-  user                         User                          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // Relacionamentos
+  userId                       String
+  user                         User @relation(fields: [userId], references: [id])
+  storeId                      String // NOVO: Pedido pertence a uma loja
+  store                        Store  @relation(fields: [storeId], references: [id], onDelete: Restrict)
   items                        OrderItem[]
   delivery                     Delivery?
   redemptions                  CouponRedemption[]
   userPointsTransactions       UserPointsTransaction[]
   influencerPointsTransactions InfluencerPointsTransaction[]
-
-  influencer Influencer? @relation(fields: [influencerId], references: [id])
+  influencer                   Influencer? @relation(fields: [influencerId], references: [id])
 
   @@index([userId])
+  @@index([storeId])
   @@index([abacateBillingId])
-  @@index([couponCode])
-  @@index([influencerId])
 }
 
 model OrderItem {
@@ -290,10 +343,9 @@ model OrderItem {
   totalCents     Int
 
   order   Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  product Product @relation(fields: [productId], references: [id])
+  product Product @relation(fields: [productId], references: [id], onDelete: Restrict)
 
   @@index([orderId])
-  @@index([productId])
 }
 
 model Delivery {
@@ -312,7 +364,7 @@ model Delivery {
 
 /**
  * ===========================
- * Coupons & Influencers
+ * Coupons & Influencers (Globais)
  * ===========================
  */
 
@@ -328,7 +380,7 @@ model Coupon {
   updatedAt    DateTime   @updatedAt
 
   redemptions CouponRedemption[]
-  influencer  Influencer?        @relation(fields: [influencerId], references: [id])
+  influencer  Influencer? @relation(fields: [influencerId], references: [id])
 
   @@index([influencerId])
 }
@@ -341,8 +393,8 @@ model CouponRedemption {
   amountDiscountCents Int
   createdAt           DateTime @default(now())
 
-  coupon Coupon @relation(fields: [couponId], references: [id], onDelete: Cascade)
-  order  Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  coupon Coupon @relation(fields: [couponId], references: [id])
+  order  Order  @relation(fields: [orderId], references: [id])
   user   User   @relation(fields: [userId], references: [id])
 
   @@index([couponId])
@@ -419,7 +471,7 @@ model UserPointsTransaction {
 
 /**
  * ===========================
- * Promotions (opcional)
+ * Promotions (Globais)
  * ===========================
  */
 
@@ -441,7 +493,7 @@ model PromotionItem {
   quantity    Int    @default(1)
 
   promotion Promotion @relation(fields: [promotionId], references: [id], onDelete: Cascade)
-  product   Product   @relation(fields: [productId], references: [id])
+  product   Product   @relation(fields: [productId], references: [id], onDelete: Restrict)
 
   @@unique([promotionId, productId])
 }

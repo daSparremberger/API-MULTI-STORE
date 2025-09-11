@@ -23,10 +23,10 @@ const schema = z.object({
   APP_URL: z.string().url(),
   FRONTEND_URL: z.string().url(),
 
-  // AbacatePay
-  ABACATEPAY_API_KEY: z.string(),
+  // AbacatePay (agora opcionais no .env, pois virão do DB por loja)
+  ABACATEPAY_API_KEY: z.string().optional(),
   ABACATEPAY_BASE_URL: z.string().url().default('https://api.abacatepay.com/v1'),
-  ABACATEPAY_WEBHOOK_SECRET: z.string()
+  ABACATEPAY_WEBHOOK_SECRET: z.string().optional()
 });
 
 export const env = schema.parse(process.env);

@@ -67,15 +67,20 @@ export type CreateCouponInput = {
   metadata?: Record<string, any>;
 };
 
+type ApiCallOptions = {
+  apiKey: string;
+}
+
 /**
  * Helper para chamadas HTTP, agora tratando o wrapper "data"
+ * e recebendo a apiKey da loja dinamicamente.
  */
-async function api<T>(path: string, init?: RequestInit): Promise<T> {
+async function api<T>(path: string, apiKey: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${env.ABACATEPAY_BASE_URL}${path}`, {
     ...init,
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${env.ABACATEPAY_API_KEY}`,
+      'Authorization': `Bearer ${apiKey}`,
       ...(init?.headers || {}),
     },
   });
@@ -93,15 +98,15 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 /**
- * SDK minimalista alinhado à tua doc
+ * SDK minimalista que agora passa a apiKey em todas as chamadas.
  */
 export const AbacatePay = {
   /**
    * Novo cliente
    * POST /customer/create
    */
-  async createCustomer(input: AbacateCustomerInput): Promise<AbacateCustomer> {
-    return api<AbacateCustomer>('/customer/create', {
+  async createCustomer(input: AbacateCustomerInput, opts: ApiCallOptions): Promise<AbacateCustomer> {
+    return api<AbacateCustomer>('/customer/create', opts.apiKey, {
       method: 'POST',
       body: JSON.stringify(input),
     });
@@ -111,13 +116,13 @@ export const AbacatePay = {
    * Nova cobrança
    * POST /billing/create
    */
-  async createBilling(input: AbacateBillingInput): Promise<AbacateBilling> {
+  async createBilling(input: AbacateBillingInput, opts: ApiCallOptions): Promise<AbacateBilling> {
     const payload = {
       frequency: 'ONE_TIME',
       methods: ['PIX'],
       ...input,
     };
-    return api<AbacateBilling>('/billing/create', {
+    return api<AbacateBilling>('/billing/create', opts.apiKey, {
       method: 'POST',
       body: JSON.stringify(payload),
     });
@@ -127,8 +132,8 @@ export const AbacatePay = {
    * Criar novo cupom
    * POST /coupon/create
    */
-  async createCoupon(input: CreateCouponInput) {
-    return api<{ id: string; code: string }>('/coupon/create', {
+  async createCoupon(input: CreateCouponInput, opts: ApiCallOptions) {
+    return api<{ id: string; code: string }>('/coupon/create', opts.apiKey, {
       method: 'POST',
       body: JSON.stringify({ data: input }), // A API de cupom exige um wrapper "data" no input
     });
@@ -138,8 +143,8 @@ export const AbacatePay = {
    * Listar cupons
    * GET /coupon/list
    */
-  async listCoupons() {
-    return api<Array<{ id: string; code: string }>>('/coupon/list', {
+  async listCoupons(opts: ApiCallOptions) {
+    return api<Array<{ id: string; code: string }>>('/coupon/list', opts.apiKey, {
       method: 'GET',
     });
   },

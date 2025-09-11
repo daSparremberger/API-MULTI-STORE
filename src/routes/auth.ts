@@ -11,7 +11,7 @@ import {
   sendResendVerificationEmail
 } from '../lib/email-templates.js';
 
-function signAccessToken(app: FastifyInstance, user: { id: string; email: string }) {
+function signAccessToken(app: FastifyInstance, user: { id: string; email: string; }) {
   return app.jwt.sign(
     { sub: user.id, email: user.email },
     { expiresIn: env.ACCESS_TOKEN_TTL }
@@ -27,7 +27,7 @@ function parseDurationMs(s: string) {
     case 'm': return n * 60 * 1000;
     case 'h': return n * 60 * 60 * 1000;
     case 'd': return n * 24 * 60 * 60 * 1000;
-    default:  return 15 * 60 * 1000;
+    default: return 15 * 60 * 1000;
   }
 }
 
@@ -44,7 +44,7 @@ async function issueRefreshToken(userId: string, ip?: string, ua?: string) {
 }
 
 export default async function authRoutes(app: FastifyInstance) {
-  // Registro + criação de cliente no AbacatePay (não bloqueante)
+  // Rota de registro do cliente (sem criar customer no gateway)
   app.post('/register', async (req, reply) => {
     const body = z.object({
       name: z.string().min(2),
@@ -81,25 +81,10 @@ export default async function authRoutes(app: FastifyInstance) {
 
     // Chama a função de envio de e-mail do arquivo de templates
     await sendVerificationEmail({ name: user.name, email: user.email }, tokenPlain);
-
-    // Cria customer no AbacatePay (best-effort, apenas se o telefone for fornecido)
-    if (body.phone) {
-      try {
-        const cust = await AbacatePay.createCustomer({
-          name: user.name,
-          email: user.email,
-          taxId: body.cpf,
-          cellphone: body.phone,
-        });
-        await prisma.user.update({
-          where: { id: user.id },
-          data: { abacateCustomerId: cust.id },
-        });
-      } catch (e) {
-        req.log.warn({ err: e }, 'abacatepay:createCustomer failed');
-      }
-    }
-
+    
+    // A criação do customer no AbacatePay foi movida para o checkout,
+    // pois é o primeiro momento em que sabemos a loja e temos a apiKey.
+    
     return reply.code(201).send({ ok: true, message: 'verification_sent' });
   });
 
@@ -139,7 +124,7 @@ export default async function authRoutes(app: FastifyInstance) {
   // Reenviar confirmação
   app.post('/resend-verification', async (req, reply) => {
     const { email } = z.object({ email: z.string().email() }).parse(req.body);
-    const user = await prisma.user.findUnique({ where: { email }, select: {id: true, email: true, name: true, emailVerifiedAt: true} });
+    const user = await prisma.user.findUnique({ where: { email }, select: { id: true, email: true, name: true, emailVerifiedAt: true } });
 
     if (!user) return reply.send({ ok: true });
     if (user.emailVerifiedAt) return reply.send({ ok: true, alreadyVerified: true });
@@ -256,7 +241,7 @@ export default async function authRoutes(app: FastifyInstance) {
   // Esqueci a senha
   app.post('/forgot-password', async (req, reply) => {
     const { email } = z.object({ email: z.string().email() }).parse(req.body);
-    const user = await prisma.user.findUnique({ where: { email }, select: {id: true, email: true, name: true} });
+    const user = await prisma.user.findUnique({ where: { email }, select: { id: true, email: true, name: true } });
     if (!user) return reply.send({ ok: true });
 
     await prisma.passwordResetToken.deleteMany({ where: { userId: user.id } });
