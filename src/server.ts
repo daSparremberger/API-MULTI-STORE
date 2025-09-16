@@ -16,16 +16,17 @@ import webhookRoutes from './routes/webhooks.js';
 import userRoutes from './routes/users.js';
 import adminRoutes from './routes/admin.js';
 
-// --- CONFIGURAÇÃO DO LOGGER SIMPLIFICADA ---
-// Habilita o logger padrão do Fastify.
-// Em produção (Render), ele gerará logs em formato JSON, que é o ideal.
 const app = Fastify({
   logger: true
 });
 
-// CORS
+// --- CORREÇÃO AQUI ---
+// Configuração de CORS mais explícita e robusta
 await app.register(cors, {
-  origin: (origin, cb) => cb(null, true),
+  origin: [
+    'http://localhost:5173', // Sua URL de desenvolvimento do front-end
+    'https://forfitalimentos.com.br' 
+  ],
   credentials: true,
 });
 
@@ -40,7 +41,6 @@ await app.register(orderRoutes, { prefix: '/orders' });
 await app.register(userRoutes, { prefix: '/me' });
 await app.register(webhookRoutes);
 await app.register(adminRoutes, { prefix: '/admin' });
-
 
 // Healthcheck
 app.get('/health', async () => {
