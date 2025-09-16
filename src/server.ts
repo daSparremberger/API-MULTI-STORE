@@ -1,8 +1,10 @@
 // src/server.ts
 import Fastify, { FastifyRequest } from 'fastify';
 import cors from '@fastify/cors';
+import { Store } from '@prisma/client';
 
 import { env } from './env.js';
+import { prisma } from './lib/prisma.js';
 import jwtPlugin from './plugins/jwt.js';
 import storePlugin from './plugins/store.js';
 
@@ -11,81 +13,56 @@ import authRoutes from './routes/auth.js';
 import catalogRoutes from './routes/catalog.js';
 import orderRoutes from './routes/orders.js';
 import webhookRoutes from './routes/webhooks.js';
+import userRoutes from './routes/users.js';
+import adminRoutes from './routes/admin.js';
 
-// -------- Logger seguro (sem quebrar no container) --------
-const wantPretty =
-  (process.env.LOG_PRETTY ?? (env.NODE_ENV === 'development' ? 'true' : 'false')) === 'true';
+// --- CONFIGURAÇÃO DO LOGGER SIMPLIFICADA ---
+// Habilita o logger padrão do Fastify.
+// Em produção (Render), ele gerará logs em formato JSON, que é o ideal.
+const app = Fastify({
+  logger: true
+});
 
-const loggerOptions = wantPretty
-  ? {
-      transport: {
-        target: 'pino-pretty',
-        options: {
-          colorize: true,
-          singleLine: true,
-          translateTime: 'SYS:HH:MM:ss',
-          ignore: 'pid,hostname',
-        },
-      },
-    }
-  : {
-      level: process.env.LOG_LEVEL ?? 'info',
-    };
-
-export const app = Fastify({ logger: loggerOptions });
-
-// -------- CORS --------
+// CORS
 await app.register(cors, {
-  origin:
-    env.NODE_ENV === 'development'
-      ? true
-      : (process.env.CORS_ORIGIN?.split(',').map(s => s.trim()).filter(Boolean) ?? []),
+  origin: (origin, cb) => cb(null, true),
   credentials: true,
 });
 
-// -------- Plugins --------
+// Plugins
 await app.register(jwtPlugin);
 await app.register(storePlugin);
 
-// -------- Rotas --------
+// Rotas
 await app.register(authRoutes, { prefix: '/auth' });
 await app.register(catalogRoutes, { prefix: '/catalog' });
 await app.register(orderRoutes, { prefix: '/orders' });
-await app.register(webhookRoutes, { prefix: '/webhooks' });
+await app.register(userRoutes, { prefix: '/me' });
+await app.register(webhookRoutes);
+await app.register(adminRoutes, { prefix: '/admin' });
 
-// -------- Healthcheck & raiz --------
-app.get('/_health', async () => ({
-  status: 'ok',
-  env: env.NODE_ENV,
-}));
 
+// Healthcheck
+app.get('/health', async () => {
+  await prisma.$queryRaw`SELECT 1`;
+  return { ok: true };
+});
+
+// Root
 app.get('/', async (req: FastifyRequest) => {
-  const store = (req as any).store as { id: string; name: string } | undefined;
+  const store = (req as any).store as Store | null;
   return {
     name: 'franquia-api',
     ok: true,
-    store: store ? { id: store.id, name: store.name } : null,
+    store: store ? { id: store.id, name: store.name } : null
   };
 });
 
-// -------- Boot --------
-const port = Number(env.PORT ?? 3000);
-
-try {
-  await app.listen({ port, host: '0.0.0.0' });
-  app.log.info(`API up on :${port}`);
-} catch (err) {
-  app.log.error(err);
-  process.exit(1);
-}
-
-// -------- Shutdown gracioso --------
-for (const sig of ['SIGINT', 'SIGTERM'] as const) {
-  process.on(sig, async () => {
-    try {
-      await app.close();
-    } finally {
-      process.exit(0);
-    }
+// Start
+app
+  .listen({ port: env.PORT, host: '0.0.0.0' })
+  .then(() => app.log.info(`API up on :${env.PORT}`))
+  .catch((err) => {
+    app.log.error(err);
+    process.exit(1);
   });
-}
