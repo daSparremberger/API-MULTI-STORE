@@ -1,110 +1,131 @@
-// prisma/seed.ts
-import { PrismaClient, UserRole } from '@prisma/client';
+// prisma/seed.js
+import { PrismaClient, UserRole, OrderStatus, CouponType } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 
 const prisma = new PrismaClient();
 
-// Funções upsert (idempotentes)
-async function upsertStore(subdomain: string, data: { name: string; city: string; state: string; abacatepayApiKey?: string; abacatepayWebhookSecret?: string; }) {
-  return prisma.store.upsert({
-    where: { subdomain },
-    update: data,
-    create: { subdomain, ...data },
-  });
-}
-
-async function upsertUser(email: string, data: { name: string; cpf: string; password?: string; role: UserRole; storeId?: string | null }) {
-  const passwordHash = data.password ? await bcrypt.hash(data.password, 10) : 'dummy_hash_for_seed';
-  return prisma.user.upsert({
-    where: { email },
-    update: { name: data.name, cpf: data.cpf, role: data.role, storeId: data.storeId },
+async function main() {
+  // 1) Loja base
+  const store = await prisma.store.upsert({
+    where: { subdomain: 'cascavel' },
+    update: {},
     create: {
-      email,
-      name: data.name,
-      cpf: data.cpf,
-      passwordHash,
-      emailVerifiedAt: new Date(),
-      role: data.role,
-      storeId: data.storeId,
+      name: 'ForFit - Cascavel',
+      subdomain: 'cascavel',
+      city: 'Cascavel',
+      state: 'PR',
     },
   });
-}
 
-async function upsertProduct(code: string, data: { name: string; costPriceCents: number; salePriceCents: number }) {
-  return prisma.product.upsert({
-    where: { code },
-    update: data,
-    create: { code, ...data },
+  // 2) Produtos
+  const products = await Promise.all([
+    prisma.product.upsert({
+      where: { code: 'FF-001' },
+      update: {},
+      create: {
+        name: 'Macarrão com Frango ao Molho de Queijo',
+        code: 'FF-001',
+        description: 'Cremoso, leve e saboroso',
+        photoUrl: 'https://picsum.photos/seed/ff001/600/400',
+        costPriceCents: 1200,
+        salePriceCents: 2390,
+      },
+    }),
+    prisma.product.upsert({
+      where: { code: 'FF-002' },
+      update: {},
+      create: {
+        name: 'Lasagna de Abobrinha Low Carb',
+        code: 'FF-002',
+        description: 'Camadas de abobrinha, molho de tomate e queijo',
+        photoUrl: 'https://picsum.photos/seed/ff002/600/400',
+        costPriceCents: 1500,
+        salePriceCents: 2890,
+      },
+    }),
+    prisma.product.upsert({
+      where: { code: 'FF-003' },
+      update: {},
+      create: {
+        name: 'Sopa de Mandioquinha',
+        code: 'FF-003',
+        description: 'Conforto em forma de sopa',
+        photoUrl: 'https://picsum.photos/seed/ff003/600/400',
+        costPriceCents: 900,
+        salePriceCents: 1990,
+      },
+    }),
+  ]);
+
+  // 3) Estoque por loja
+  for (const p of products) {
+    await prisma.storeInventory.upsert({
+      where: { storeId_productId: { storeId: store.id, productId: p.id } },
+      update: { quantity: 50 },
+      create: {
+        storeId: store.id,
+        productId: p.id,
+        quantity: 50,
+      },
+    });
+  }
+
+  // 4) Promo simples
+  const promo = await prisma.promotion.upsert({
+    where: { code: 'WELCOME10' },
+    update: {},
+    create: {
+      code: 'WELCOME10',
+      costPriceCents: 0,
+      salePriceCents: 0,
+      items: {
+        create: [
+          { productId: products[0].id, quantity: 1 },
+          { productId: products[1].id, quantity: 1 },
+        ],
+      },
+    },
   });
-}
 
-async function setInventory(storeId: string, productId: string, quantity: number) {
-  return prisma.storeInventory.upsert({
-    where: { storeId_productId: { storeId, productId } },
-    update: { quantity },
-    create: { storeId, productId, quantity },
+  // 5) Usuário ADMIN (hash de senha)
+  const adminEmail = 'samuel@testeadmin.com';
+  const adminPass = '410203Sa@';
+  const passwordHash = await bcrypt.hash(adminPass, 10);
+
+  const admin = await prisma.user.upsert({
+    where: { email: adminEmail },
+    update: {
+      role: UserRole.ADMIN,
+      storeId: store.id,
+    },
+    create: {
+      name: 'Samuel Admin',
+      cpf: '00000000191', // CPF de teste (não válido) apenas para seed
+      email: adminEmail,
+      passwordHash,
+      phone: '(45) 99999-9999',
+      role: UserRole.ADMIN,
+      storeId: store.id,
+      emailVerifiedAt: new Date(),
+    },
   });
-}
 
-async function main() {
-  console.log('🌱 Seeding...');
-
-  // 1. Cria a loja principal (franquia de Cascavel)
-  const storeCascavel = await upsertStore('cascavel', {
-    name: 'Forfit - Cascavel',
-    city: 'Cascavel',
-    state: 'PR',
-    abacatepayApiKey: 'abc_dev_wLmb4QxBnbfr5P2xGE4smusY', // Chave de teste
-    abacatepayWebhookSecret: 'a82fdc9c77b04d12aa7fbb08d2214' // Segredo de teste
+  // 6) Conta de pontos do usuário (exemplo)
+  await prisma.userPointsAccount.upsert({
+    where: { userId: admin.id },
+    update: { balance: 100 },
+    create: {
+      userId: admin.id,
+      balance: 100,
+    },
   });
-  console.log(`✅ Loja criada: ${storeCascavel.name}`);
 
-  // 2. Cria um Super Admin (geral) e um Admin para a loja de Cascavel
-  const superAdmin = await upsertUser('superadmin@forfit.com.br', {
-    name: 'Super Admin',
-    cpf: '00000000000',
-    password: 'superpassword123',
-    role: UserRole.SUPER_ADMIN,
-  });
-  console.log(`✅ Super Admin criado: ${superAdmin.email}`);
-
-  const adminCascavel = await upsertUser('admin.cascavel@forfit.com.br', {
-    name: 'Admin Cascavel',
-    cpf: '11111111111',
-    password: 'adminpassword123',
-    role: UserRole.ADMIN,
-    storeId: storeCascavel.id,
-  });
-  console.log(`✅ Admin da loja criado: ${adminCascavel.email}`);
-
-  // 3. Cria um cliente de exemplo
-  const customer = await upsertUser('cliente@example.com', {
-    name: 'Cliente Exemplo',
-    cpf: '22222222222',
-    password: 'password123',
-    role: UserRole.CUSTOMER,
-  });
-  console.log(`✅ Cliente criado: ${customer.email}`);
-
-  // 4. Cria um produto global
-  const produtoFrango = await upsertProduct('FF-001', {
-    name: 'Frango grelhado com arroz integral',
-    costPriceCents: 1250,
-    salePriceCents: 2790,
-  });
-  console.log(`✅ Produto global criado: ${produtoFrango.name}`);
-
-  // 5. Define o estoque deste produto para a loja de Cascavel
-  await setInventory(storeCascavel.id, produtoFrango.id, 50);
-  console.log(`✅ Estoque definido para ${produtoFrango.name} em ${storeCascavel.name}: 50 unidades`);
-
-
-  console.log('🌱 Seed finalizado!');
+  console.log('Seed concluído com sucesso!');
 }
 
 main()
   .catch((e) => {
-    console.error('❌ Seed error:', e);
+    console.error('Seed falhou:', e);
     process.exit(1);
   })
   .finally(async () => {
