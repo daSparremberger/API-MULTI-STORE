@@ -7,9 +7,8 @@ type UserInfo = {
   email: string;
 };
 
-// URL do logo da Forfit - você pode substituir por um link hospedado em seu próprio CDN se preferir.
-const forfitLogoUrl = 'https://i.imgur.com/gSHB40E.png';
 const forfitRed = '#ae222a';
+
 
 /**
  * Monta o corpo base do e-mail com o branding da Forfit.
@@ -23,7 +22,7 @@ function createEmailBase(content: { title: string; body: string; button: { text:
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;900&display=swap" rel="stylesheet">
     <style>
       body { margin: 0; padding: 0; background-color: #f4f4f4; }
       table { border-spacing: 0; }
@@ -41,13 +40,13 @@ function createEmailBase(content: { title: string; body: string; button: { text:
   <body>
     <center class="wrapper">
       <table class="main" width="100%">
-        <!-- LOGO -->
         <tr>
-          <td style="padding: 20px 0; text-align: center; background-color: #FAFAFA;">
-            <a href="https://seusite.com.br" target="_blank"><img src="${forfitLogoUrl}" alt="Forfit Logo" width="120"></a>
+          <td style="padding: 30px 0; text-align: center; background-color: #FAFAFA;">
+            <a href="https://seusite.com.br" target="_blank" style="text-decoration: none; color: ${forfitRed};">
+              <h1 style="margin: 0; font-family: 'Poppins', sans-serif; font-size: 32px; font-weight: 900; letter-spacing: 1px; text-transform: uppercase;">FOR FIT ALIMENTOS</h1>
+            </a>
           </td>
         </tr>
-        <!-- CONTEÚDO DO E-MAIL -->
         <tr>
           <td class="content">
             <h2 style="font-family: 'Poppins', sans-serif;">${content.title}</h2>
@@ -57,7 +56,6 @@ function createEmailBase(content: { title: string; body: string; button: { text:
             </p>
           </td>
         </tr>
-        <!-- FOOTER -->
         <tr>
           <td class="footer">
             <p>&copy; ${new Date().getFullYear()} Forfit. Todos os direitos reservados.</p>
